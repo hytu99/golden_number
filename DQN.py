@@ -165,7 +165,9 @@ target_net.load_state_dict(policy_net.state_dict())
 target_net.eval()
 
 BATCH_SIZE = 16
+TARGET_UPDATE = 10
 GAMMA = 0.999
+EPSILON = 0.2
 
 optimizer = torch.optim.RMSprop(policy_net.parameters(), lr=1e-2)
 
@@ -178,10 +180,10 @@ def sample_data():
 
     end_points = random.sample(
         list(range(n_states, len(gnum_list) - 1)), 
-        BATCH_SIZE
-    )
+        BATCH_SIZE - 1
+    ) + [len(gnum_list) - 1]
     inputs = [
-        gnum_list[end - n_states: end]
+        gnum_list[end - n_states + 1: end + 1]
         for end in end_points
     ]
     inputs = torch.tensor(inputs).float()
@@ -214,6 +216,9 @@ def optimize_model():
 
     optimizer.step()
 
+    if len(gnum_list) % TARGET_UPDATE == 0:
+        target_net.load_state_dict(policy_net.state_dict())
+
 
 def generate_predicted_numbers(lastGNum, lastScore, numberCount):
 
@@ -225,13 +230,13 @@ def generate_predicted_numbers(lastGNum, lastScore, numberCount):
         gnum_list = np.append(gnum_list, [lastGNum])
         reward_list = np.append(reward_list, [lastScore])
 
-    if len(gnum_list) >= n_states:
+    if EPSILON > random.uniform(0, 1) or len(gnum_list) < n_states:
+        action_taken = random.choice(list(range(n_actions)))
+    else:
         with torch.no_grad():
             inputs = torch.from_numpy(gnum_list[-n_states:]).unsqueeze(0).float()
             print(inputs.dtype, policy_net.net[0].weight.dtype)
             action_taken = policy_net(inputs).max(1)[1].item()
-    else:
-        action_taken = random.choice(list(range(n_actions)))
 
     action_list = np.append(action_list, [action_taken])
 
@@ -325,8 +330,10 @@ def main(roomId, userInfoFile):
             continue
         todayGoldenList = todayGoldenListResp.data
         if len(todayGoldenList.goldenNumberList) != 0:
-            print('Last golden number is: ' +
-                  str(todayGoldenList.goldenNumberList[-1]))
+            last_gnum = todayGoldenList.goldenNumberList[-1]
+            print('Last golden number is: ' + str(last_gnum))
+        else:
+            last_gnum = None
 
         lastRoundResp = client.request(
             app.op['History'](
@@ -345,8 +352,7 @@ def main(roomId, userInfoFile):
                 lastScore = scoreArray[0].score
         print('Last round score: {}'.format(lastScore))
 
-        number1, number2 = generate_predicted_numbers(
-            todayGoldenList.goldenNumberList[-1], lastScore, state.numbers)
+        number1, number2 = generate_predicted_numbers(last_gnum, lastScore, state.numbers)
 
         if (state.numbers == 2):
             submitRsp = client.request(
